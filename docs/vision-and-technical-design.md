@@ -29,6 +29,40 @@ The primary reporter is a user of an open-source application who can explain wha
 
 The happy path should work on desktop and mobile, with keyboard navigation and screen-reader labels. Errors should tell the reporter what they can do next without exposing credentials or internal details.
 
+## Visibility, identity, and updates
+
+These are separate product choices. Reading public GitHub issues does not require IssueFoyer to identify reporters, and reporter identity is not needed to create an issue through the project’s GitHub App.
+
+### Issue visibility
+
+A project can configure its portal to:
+
+- **Hide the issue board.** Reporters submit through the form and receive a link to their new issue.
+- **Show a public issue board.** Reporters can browse configured categories and open issues before submitting. The board reads public issue data from GitHub; it does not maintain a second issue list or issue state.
+
+A public board can show every matching issue or only open issues, as configured. It cannot promise “show only the issues I submitted” without an identity or a saved association. As a lightweight option, IssueFoyer may keep a reporter’s issue links in that browser’s local storage. This is a convenience for the same device and browser, not an account, not cross-device history, and not a secure privacy boundary. Users must be able to clear it.
+
+Recommended default: keep the board hidden for the first deployment; make public browsing a project configuration option once its layout and GitHub API limits are handled. Do not make an authenticated “my issues” view part of the initial release.
+
+### Reporter authentication and attribution
+
+Reporters do not sign in for the core flow. The project maintainer authorizes IssueFoyer during setup by installing a GitHub App on the target repository. For each submission, the serverless endpoint uses the App’s private key to obtain a short-lived installation token limited to that repository, then creates an issue with the Issues: write permission. The credential stays on the server and is never sent to the browser. GitHub’s create-issue endpoint accepts GitHub App installation tokens with Issues: write permission. [GitHub API permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
+
+Because the installation token acts as the App, GitHub shows the App as the issue author. The issue body should say it was submitted through IssueFoyer, without inventing or implying a GitHub identity for the reporter. Do not put an unverified name, email, or other private contact information in a public issue.
+
+Google or Facebook sign-in is not needed for anonymous reporting. A third-party identity could identify a reporter to IssueFoyer, but it would not make them the author of a GitHub issue or create a GitHub identity. Adding any account-based “my reports” feature would also require IssueFoyer to retain a user-to-issue association. If future features require comments or actions on GitHub as the reporter, offer GitHub sign-in separately and keep it optional.
+
+### Two-way flow and notifications
+
+The initial flow is direct:
+
+1. Reporter browser sends a submission to the IssueFoyer endpoint.
+2. The endpoint validates it and creates a GitHub issue with the project’s App installation token.
+3. The endpoint returns the issue URL and number to the browser.
+4. When a public board or issue detail is opened, it reads the current issue state and comments from GitHub. No webhook or mirrored issue database is needed for this read path.
+
+The reporter can keep the returned issue link and view updates on GitHub. Email updates are a separate opt-in feature: IssueFoyer would need a verified address and a retained mapping from that address to the GitHub issue number, then use GitHub webhooks for issue changes and an email provider to send notifications. That mapping is personal data and is additional storage, even though GitHub remains the source of truth for the issue. Do not include email updates in the no-storage MVP. Revisit them only if users need notifications enough to justify the extra data and operations.
+
 ## Scope
 
 ### First release
@@ -37,14 +71,14 @@ The happy path should work on desktop and mobile, with keyboard navigation and s
 - Static, responsive report page, hosted on GitHub Pages or another static host.
 - A small serverless submission endpoint, initially deployable as a Cloudflare Worker or equivalent.
 - GitHub App authentication, installed by the maintainer on the target repository with Issues: write and Metadata: read permissions. The endpoint requests an installation token limited to that repository and the Issues permission.
-- Bug report form with project-configured fields and labels.
+- Project-configured report categories, initially bug reports and feature suggestions, with fields and labels set per category.
 - Server-side validation, safe issue-body rendering, duplicate-submit protection, and a clear success page linking to the created issue.
 - Documentation for local development, GitHub App setup, deployment, customization, and privacy.
 
 ### Not in the first release
 
 - A maintainer dashboard, report inbox, account system, or database of submissions.
-- Issue status synchronization, comments, or reporter notifications.
+- Webhook-driven issue synchronization, comments, or reporter notifications. The public issue board reads current issue state from GitHub when requested.
 - File uploads or screenshots. These introduce storage, abuse, and privacy concerns; add them only with an explicit design for direct upload and retention.
 - AI classification, automatic issue merging, voting, public roadmaps, analytics, and project discovery.
 - Multiple issue-tracker providers. Keep the provider interface ready for them, but validate the GitHub flow first.
@@ -59,7 +93,8 @@ flowchart LR
   R -->|report over HTTPS| F[Stateless serverless function]
   F -->|short-lived installation token| G[GitHub Issues API]
   G -->|created issue URL and number| F
-  F -->|result only; no report archive| R
+  G -->|current public issue data on request| F
+  F -->|submission result or optional board data| R
   C[Public project configuration] --> S
   C --> F
 ```
@@ -101,23 +136,34 @@ project:
   branding:
     logo: /assets/logo.svg
     accentColor: "#6d8f75"
-  category:
-    id: bug
-    label: Report a problem
-    githubLabels: [bug]
-  questions:
-    - id: expected
-      type: longText
-      label: What did you expect to happen?
-      required: true
-    - id: actual
-      type: longText
-      label: What happened instead?
-      required: true
-    - id: steps
-      type: longText
-      label: How can we reproduce it?
-      required: true
+  categories:
+    - id: bug
+      label: Report a problem
+      githubLabels: [bug]
+      questions:
+        - id: expected
+          type: longText
+          label: What did you expect to happen?
+          required: true
+        - id: actual
+          type: longText
+          label: What happened instead?
+          required: true
+        - id: steps
+          type: longText
+          label: How can we reproduce it?
+          required: true
+    - id: feature
+      label: Suggest an improvement
+      githubLabels: [enhancement]
+      questions:
+        - id: idea
+          type: longText
+          label: What would you like to be able to do?
+          required: true
+  issueBoard:
+    enabled: false
+    state: open
 ```
 
 The schema must constrain question types and label values. It must not allow configuration to inject executable HTML or arbitrary script. The endpoint uses trusted deployment configuration for the repository and allowed labels; it does not trust client-supplied labels or repository identifiers.
@@ -167,19 +213,22 @@ Define a provider-neutral submission request and result, then implement a GitHub
 - **Deployment:** publish a reusable static-site and Cloudflare Worker template, with GitHub Pages as the documented frontend path. Keep the API contract portable so another serverless host can replace the Worker.
 - **GitHub App:** each deployment owner creates and installs a dedicated GitHub App for one repository. This avoids a central IssueFoyer service becoming a trusted intermediary for every adopter. Provide a setup guide and an App manifest to reduce manual setup.
 - **Form schema:** support a small, safe set of field types: short text, long text, single choice, and checkbox. Keep the first configuration schema declarative; no arbitrary HTML, JavaScript, or expression language.
-- **Issue types:** start with bug reports. Add feature suggestions after the report flow and issue formatting have proven useful; this keeps the first form focused.
+- **Issue types:** support bug reports and feature suggestions as configured categories. Each category has its own prompts and GitHub labels; other categories can use the same constrained schema.
 - **Abuse challenge:** require a configurable challenge on public production deployments, with Turnstile as the first supported option. Allow it to be disabled for local development. Rate limiting and request-size limits remain required independently.
 - **Duplicate handling:** do not add a database. Put a request marker in the GitHub issue body and use it for best-effort retry detection. State clearly that an ambiguous timeout can still result in a duplicate.
-- **Attachments and private contact:** defer both. Attachments need a storage/retention design, and private follow-up needs a private channel; neither belongs in a no-report-storage MVP.
+- **Attachments and private contact:** defer both. Attachments need a storage/retention design, and private follow-up needs a verified channel and a retained mapping; neither belongs in a no-report-storage MVP.
 
 These are product and architecture recommendations for the first implementation. Revisit them only when user feedback or deployment experience exposes a concrete need.
 
 ## References
 
 - [GitHub REST API: create an issue](https://docs.github.com/en/rest/issues/issues#create-an-issue)
+- [GitHub REST API: list repository issues](https://docs.github.com/en/rest/issues/issues#list-repository-issues)
+- [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues)
 - [GitHub App permissions required for REST endpoints](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
 - [Authenticate as a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)
 - [GitHub Pages](https://docs.github.com/en/pages)
+- [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) (for comparison if optional third-party sign-in is considered)
 
 ## Success criteria
 
