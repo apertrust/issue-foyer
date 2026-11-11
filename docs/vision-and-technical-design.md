@@ -42,7 +42,7 @@ A project can configure its portal to:
 
 A public board can show every matching issue or only open issues, as configured. It cannot promise “show only the issues I submitted” without an identity or a saved association. As a lightweight option, IssueFoyer may keep a reporter’s issue links in that browser’s local storage. This is a convenience for the same device and browser, not an account, not cross-device history, and not a secure privacy boundary. Users must be able to clear it.
 
-Recommended default: keep the board hidden for the first deployment; make public browsing a project configuration option once its layout and GitHub API limits are handled. Do not make an authenticated “my issues” view part of the initial release.
+Recommended default: keep the board hidden for the first deployment; make public browsing a project configuration option once its layout and GitHub API limits are handled. If enabled, serve board data through a cached read path rather than having every browser call the GitHub API directly. Do not make an authenticated “my issues” view part of the initial release.
 
 ### Reporter authentication and attribution
 
@@ -185,7 +185,13 @@ Use a client-generated request ID as a marker in the issue body and check for th
 
 Reports become public GitHub issues. The form must say this before submission and should remind reporters not to include passwords, private keys, personal information, or confidential files. Avoid collecting email addresses in the first release; a public issue is not a safe place to put private contact details, and private follow-up would require another data-handling design.
 
-The endpoint should use HTTPS, strict request-size limits, origin checks as a browser safety measure, per-project quotas or edge rate limiting, and a challenge such as Turnstile when abuse requires it. CORS and origin checks alone do not prevent scripted requests. Secrets must never appear in page source, client bundles, logs, error messages, or generated artifacts. Logs should exclude report bodies and tokens by default.
+The endpoint should use HTTPS, strict request-size limits, origin checks as a browser safety measure, per-project quotas or edge rate limiting, and a challenge such as Turnstile for public production deployments. CORS and origin checks alone do not prevent scripted requests. Secrets must never appear in page source, client bundles, logs, error messages, or generated artifacts. Logs should exclude report bodies and tokens by default.
+
+#### GitHub API limits
+
+GitHub App installation tokens have a primary REST API limit of at least 5,000 requests per hour per installation. Unauthenticated public API requests are limited to 60 per hour per originating IP. Separately, GitHub generally limits content-generating requests to 80 per minute and 500 per hour, with lower endpoint-specific or secondary limits possible. Creating issues too quickly can trigger secondary limits. These are ceilings, not a promised submission throughput; GitHub can change or enforce additional abuse limits. See [GitHub's current REST API rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) and [create-issue endpoint](https://docs.github.com/en/rest/issues/issues#create-an-issue).
+
+For a typical individual open-source project, these limits are unlikely to constrain normal reporting. A public anonymous endpoint can still be abused, and a popular portal can reach issue-creation limits. Rate-limit submissions before they reach GitHub, use a challenge, honor `Retry-After` and rate-limit reset headers, and show a clear retry-later message rather than retrying aggressively. Do not make every visitor's browser call GitHub's unauthenticated API directly; it shares the visitor's IP-based limit and scales poorly. Keep the public board off by default, and use a cached public-data read path if a project enables it.
 
 “No issue database” means reports and issue state are not stored by IssueFoyer. Abuse-prevention counters, transient request IDs, hosting logs, and GitHub's own issue data are separate and must be documented honestly; platform rate-limiting features may retain limited operational metadata.
 
